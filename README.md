@@ -1,10 +1,10 @@
 # Secret Drop
 
-Минимальный веб-сервис: пользователь проходит Basic Auth, вставляет текст, сервис сохраняет его как отдельный `.txt` файл на диск.
+A minimal web service for receiving secrets: the user authenticates with Basic Auth, pastes text into a form, and the service saves it as a separate `.txt` file on disk.
 
-Нет API/URL для чтения сохраненных секретов через веб.
+There is no API or web URL for reading stored secrets back through the application.
 
-## Запуск
+## Run
 
 ```bash
 cp .env.example .env
@@ -13,33 +13,33 @@ mkdir -p secrets
 docker compose up -d --build
 ```
 
-Открыть локально:
+Open locally:
 
 ```text
 http://127.0.0.1:8080
 ```
 
-Для доступа из интернета поставьте Caddy/nginx/Traefik перед `127.0.0.1:8080` и используйте HTTPS. Basic Auth без HTTPS не защищает пароль от перехвата.
+For Internet access, put Caddy, nginx, or Traefik in front of `127.0.0.1:8080` and use HTTPS. Basic Auth alone does not encrypt credentials in transit.
 
-## Где лежат секреты
+## Secret storage
 
-На хосте:
+Secrets are stored on the host in:
 
 ```text
 ./secrets/*.txt
 ```
 
-Посмотреть:
+To inspect them locally:
 
 ```bash
 ls -la secrets/
 cat secrets/<filename>.txt
 ```
 
-## Остановка
+## Stop
 
 ```bash
 docker compose down
 ```
 
-Файлы в `./secrets` сохраняются после удаления/перезапуска контейнера.
+Files in `./secrets` remain on disk after the container is stopped, removed, or restarted.
