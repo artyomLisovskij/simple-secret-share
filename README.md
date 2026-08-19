@@ -1,8 +1,6 @@
 # Secret Drop
 
-A minimal web service for receiving secrets: the user authenticates with Basic Auth, pastes text into a form, and the service saves it as a separate `.txt` file on disk.
-
-There is no API or web URL for reading stored secrets back through the application.
+A minimal web service for sharing secrets: an authenticated user pastes text into a form, the service saves it as a separate `.txt` file on disk, and then returns a shareable URL for reading that secret back.
 
 ## Run
 
@@ -13,13 +11,23 @@ mkdir -p secrets
 docker compose up -d --build
 ```
 
-Open locally:
+Get the temporary Cloudflare Tunnel URL:
 
-```text
-http://127.0.0.1:8080
+```bash
+docker compose logs -f cloudflared
 ```
 
-For Internet access, put Caddy, nginx, or Traefik in front of `127.0.0.1:8080` and use HTTPS. Basic Auth alone does not encrypt credentials in transit.
+`cloudflared` will print a temporary `trycloudflare.com` hostname on startup. Open that URL to access the app over HTTPS.
+
+The tunnel is temporary, so the public hostname may change after a restart.
+
+## How sharing works
+
+- `push`: open `/`, authenticate with Basic Auth, and submit a secret
+- `pull`: after saving, the app shows a shareable URL like `/s/<filename>.txt`
+- anyone with the share link can open that specific secret without Basic Auth
+
+The returned link is based on the incoming request host, so it works correctly behind the temporary Cloudflare Tunnel hostname.
 
 ## Secret storage
 

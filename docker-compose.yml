@@ -7,8 +7,6 @@ services:
     environment:
       LISTEN: "0.0.0.0:8080"
       DATA_DIR: "/data"
-    ports:
-      - "127.0.0.1:8080:8080"
     volumes:
       - ./secrets:/data
     read_only: true
@@ -16,3 +14,12 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      - secret-drop
+    # Quick tunnel (temporary) — Cloudflare will issue a random trycloudflare.com hostname.
+    # That hostname is printed to the container logs on startup.
+    command: tunnel --url http://secret-drop:8080

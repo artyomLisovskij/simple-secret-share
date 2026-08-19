@@ -26,20 +26,41 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
     textarea { width: 100%; height: 250px; box-sizing: border-box; font-family: monospace; font-size: 16px; }
     button { margin-top: 12px; padding: 10px 20px; font-size: 16px; }
     .ok { padding: 12px; background: #eee; margin-bottom: 16px; }
+    .box { padding: 12px; background: #f6f6f6; margin-bottom: 16px; word-break: break-all; }
+    .muted { color: #555; }
   </style>
 </head>
 <body>
   <h2>Secret Drop</h2>
   {{if .Message}}<div class="ok"><strong>{{.Message}}</strong></div>{{end}}
+  {{if .SecretURL}}
+  <div class="box">
+    <div><strong>Share link:</strong></div>
+    <div><a href="{{.SecretURL}}">{{.SecretURL}}</a></div>
+    <div class="muted">Anyone with this link can open the secret.</div>
+  </div>
+  {{end}}
+  {{if .Secret}}
+  <div class="box">
+    <div><strong>Secret:</strong></div>
+    <p><a href="{{.RawURL}}">Open raw text</a></p>
+    <textarea readonly>{{.Secret}}</textarea>
+  </div>
+  <p><a href="/">Back</a></p>
+  {{else}}
   <form method="post" action="/">
     <textarea name="secret" autofocus required></textarea><br>
     <button type="submit">Save</button>
   </form>
+  {{end}}
 </body>
 </html>`))
 
 type pageData struct {
-    Message string
+    Message   string
+    SecretURL string
+    Secret    string
+    RawURL    string
 }
 
 func main() {
@@ -89,7 +110,11 @@ func main() {
             }
 
             log.Printf("saved secret: %s", filename)
-            if err := page.Execute(w, pageData{Message: "Saved."}); err != nil {
+            secretURL := buildExternalURL(r, "/s/"+filename)
+            if err := page.Execute(w, pageData{
+                Message:   "Saved.",
+                SecretURL: secretURL,
+            }); err != nil {
                 log.Printf("template error: %v", err)
             }
         default:
@@ -97,8 +122,44 @@ func main() {
             http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
         }
     })
+    mux.HandleFunc("/s/", func(w http.ResponseWriter, r *http.Request) {
+        name, raw, ok := parseSecretPath(r.URL.Path)
+        if !ok {
+            http.NotFound(w, r)
+            return
+        }
+        if r.Method != http.MethodGet {
+            w.Header().Set("Allow", "GET")
+            http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
 
-    handler := basicAuth(user, pass, securityHeaders(mux))
+        secret, err := readSecret(dataDir, name)
+        if err != nil {
+            if os.IsNotExist(err) {
+                http.NotFound(w, r)
+                return
+            }
+            log.Printf("read error: %v", err)
+            http.Error(w, "read failed", http.StatusInternalServerError)
+            return
+        }
+
+        if raw {
+            w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+            _, _ = w.Write(secret)
+            return
+        }
+
+        if err := page.Execute(w, pageData{
+            Secret: string(secret),
+            RawURL: "/s/" + name + "/raw",
+        }); err != nil {
+            log.Printf("template error: %v", err)
+        }
+    })
+
+    handler := authForWriteOnly(user, pass, securityHeaders(mux))
 
     server := &http.Server{
         Addr:              addr,
@@ -139,11 +200,47 @@ func saveSecret(dir string, data []byte) (string, error) {
         return "", err
     }
 
-    return path, nil
+    return name, nil
 }
 
-func basicAuth(username, password string, next http.Handler) http.Handler {
+func readSecret(dir, name string) ([]byte, error) {
+    if !isValidSecretName(name) {
+        return nil, os.ErrNotExist
+    }
+    return os.ReadFile(filepath.Join(dir, name))
+}
+
+func parseSecretPath(path string) (name string, raw bool, ok bool) {
+    if !strings.HasPrefix(path, "/s/") {
+        return "", false, false
+    }
+
+    name = strings.TrimPrefix(path, "/s/")
+    if strings.HasSuffix(name, "/raw") {
+        raw = true
+        name = strings.TrimSuffix(name, "/raw")
+    }
+
+    if !isValidSecretName(name) {
+        return "", false, false
+    }
+    return name, raw, true
+}
+
+func isValidSecretName(name string) bool {
+    if name == "" || name != filepath.Base(name) {
+        return false
+    }
+    return strings.HasSuffix(name, ".txt")
+}
+
+func authForWriteOnly(username, password string, next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if strings.HasPrefix(r.URL.Path, "/s/") {
+            next.ServeHTTP(w, r)
+            return
+        }
+
         user, pass, ok := r.BasicAuth()
 
         userOK := subtle.ConstantTimeCompare([]byte(user), []byte(username)) == 1
@@ -168,6 +265,16 @@ func securityHeaders(next http.Handler) http.Handler {
         w.Header().Set("Referrer-Policy", "no-referrer")
         next.ServeHTTP(w, r)
     })
+}
+
+func buildExternalURL(r *http.Request, path string) string {
+    scheme := "http"
+    if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+        scheme = strings.Split(forwarded, ",")[0]
+    } else if r.TLS != nil {
+        scheme = "https"
+    }
+    return scheme + "://" + r.Host + path
 }
 
 func getenv(name, fallback string) string {
