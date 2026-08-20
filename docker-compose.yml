@@ -38,7 +38,7 @@ services:
     environment:
       DATA_DIR: "/data"
     volumes:
-      - ./secrets:/data:ro
+      - ./secrets:/data
     stdin_open: true
     tty: true
     read_only: true
