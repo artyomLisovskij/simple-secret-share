@@ -1,6 +1,8 @@
 services:
   secret-drop:
-    build: .
+    build:
+      context: .
+      target: app
     restart: unless-stopped
     env_file:
       - .env
@@ -14,12 +16,39 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    networks:
+      - app
 
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     depends_on:
       - secret-drop
-    # Quick tunnel (temporary) — Cloudflare will issue a random trycloudflare.com hostname.
-    # That hostname is printed to the container logs on startup.
+    # Temporary quick tunnel. The public trycloudflare.com URL is printed in container logs.
     command: tunnel --url http://secret-drop:8080
+    networks:
+      - app
+
+  decrypt:
+    build:
+      context: .
+      target: decrypt
+    profiles:
+      - tools
+    environment:
+      DATA_DIR: "/data"
+    volumes:
+      - ./secrets:/data:ro
+    stdin_open: true
+    tty: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  app:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+        - subnet: fd00:dead:beef:1::/64

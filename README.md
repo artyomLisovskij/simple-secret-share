@@ -1,53 +1,72 @@
 # Secret Drop
 
-A minimal web service for sharing secrets: an authenticated user pastes text into a form, the service saves it as a separate `.txt` file on disk, and then returns a shareable URL for reading that secret back.
+A minimal web service for sharing secrets over HTTPS via Cloudflare Tunnel.
+
+An authenticated user pastes text into a form, encrypts it in the browser with a password, and the service stores only the ciphertext. Share links require Basic Auth, and opening a secret also requires the encryption password (decrypted in the browser).
+
+## Features
+
+- Basic Auth for create and read links
+- Browser-side encryption/decryption with Web Crypto (no npm)
+- Encrypted files on disk (`AES-256-GCM` + `PBKDF2-SHA256`)
+- Temporary public HTTPS URL through Cloudflare quick tunnel
+- Go CLI utility to decrypt stored files
+
+## Requirements
+
+- Docker
+- Docker Compose
 
 ## Run
+
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+The script creates `.env` from `.env.example` if needed, starts the stack, and prints the temporary public URL when available.
+
+You can also start manually:
 
 ```bash
 cp .env.example .env
 nano .env
 mkdir -p secrets
 docker compose up -d --build
-```
-
-Get the temporary Cloudflare Tunnel URL:
-
-```bash
 docker compose logs -f cloudflared
 ```
 
-`cloudflared` will print a temporary `trycloudflare.com` hostname on startup. Open that URL to access the app over HTTPS.
-
-The tunnel is temporary, so the public hostname may change after a restart.
+Edit `.env` and set a strong `BASIC_PASS` before use.
 
 ## How sharing works
 
-- `push`: open `/`, authenticate with Basic Auth, and submit a secret
-- `pull`: after saving, the app shows a shareable URL like `/s/<filename>.txt`
-- anyone with the share link can open that specific secret without Basic Auth
+- `push`: open `/`, authenticate with Basic Auth, enter a secret and an encryption password
+- the browser encrypts the secret before upload; the server stores only ciphertext
+- `pull`: open `/s/<filename>.enc` with Basic Auth, then enter the encryption password in the page
+- decryption happens in the browser; the encryption password is not sent to the server
 
-The returned link is based on the incoming request host, so it works correctly behind the temporary Cloudflare Tunnel hostname.
+Encrypted JSON is also available at `/s/<filename>.enc/raw` (still behind Basic Auth).
+
+## Decrypt CLI
+
+```bash
+docker compose run --rm decrypt
+```
+
+The utility lists encrypted files in `./secrets`, asks which one to decrypt, prompts for the password, and prints plaintext to stdout.
 
 ## Secret storage
 
-Secrets are stored on the host in:
+Encrypted secrets are stored on the host in:
 
 ```text
-./secrets/*.txt
+./secrets/*.enc
 ```
 
-To inspect them locally:
-
-```bash
-ls -la secrets/
-cat secrets/<filename>.txt
-```
+Files remain after the containers are stopped, removed, or restarted.
 
 ## Stop
 
 ```bash
 docker compose down
 ```
-
-Files in `./secrets` remain on disk after the container is stopped, removed, or restarted.
