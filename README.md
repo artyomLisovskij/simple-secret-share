@@ -40,8 +40,9 @@ Edit `.env` and set a strong `BASIC_PASS` before use.
 
 ## How sharing works
 
-- `push`: open `/`, authenticate with Basic Auth, enter a secret and an encryption password
+- `push`: open `/`, authenticate with Basic Auth, optionally set a name, enter a secret and an encryption password
 - the browser encrypts the secret before upload; the server stores only ciphertext
+- if a name is provided, it is appended to the filename (`...-<name>.enc`)
 - `pull`: open `/s/<filename>.enc` with Basic Auth, then enter the encryption password in the page
 - decryption happens in the browser; the encryption password is not sent to the server
 

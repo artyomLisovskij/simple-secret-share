@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"html/template"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"secret-drop/internal/secretcrypto"
 )
@@ -26,7 +28,7 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
   <title>Secret Drop</title>
   <style>
     body { font-family: sans-serif; max-width: 700px; margin: 60px auto; padding: 0 20px; }
-    textarea, input[type=password] { width: 100%; box-sizing: border-box; font-size: 16px; margin-top: 8px; }
+    textarea, input[type=password], input[type=text] { width: 100%; box-sizing: border-box; font-size: 16px; margin-top: 8px; }
     textarea { height: 250px; font-family: monospace; }
     button { margin-top: 12px; padding: 10px 20px; font-size: 16px; }
     label { display: block; margin-top: 12px; }
@@ -126,6 +128,9 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
   </script>
   {{else}}
   <form id="create-form">
+    <label>Name (optional)
+      <input id="secret-name" type="text" maxlength="40" autocomplete="off" placeholder="e.g. vpn-token">
+    </label>
     <label>Secret
       <textarea id="secret" autofocus required></textarea>
     </label>
@@ -210,10 +215,11 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
       saveBtn.disabled = true;
       try {
         const payload = await encryptSecret(secret, password);
+        const name = document.getElementById("secret-name").value.trim();
         const resp = await fetch("/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ name: name, payload: payload }),
           credentials: "same-origin"
         });
         if (!resp.ok) {
@@ -269,18 +275,22 @@ func main() {
 			}
 		case http.MethodPost:
 			r.Body = http.MaxBytesReader(w, r.Body, maxSecretSize)
-			payload, err := io.ReadAll(r.Body)
+			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				http.Error(w, "invalid request", http.StatusBadRequest)
 				return
 			}
-			payload = []byte(strings.TrimSpace(string(payload)))
-			if len(payload) == 0 || !secretcrypto.IsPayload(payload) {
+
+			var req struct {
+				Name    string          `json:"name"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil || len(req.Payload) == 0 || !secretcrypto.IsPayload(req.Payload) {
 				http.Error(w, "invalid encrypted payload", http.StatusBadRequest)
 				return
 			}
 
-			filename, err := saveSecret(dataDir, payload)
+			filename, err := saveSecret(dataDir, req.Payload, req.Name)
 			if err != nil {
 				log.Printf("save error: %v", err)
 				http.Error(w, "save failed", http.StatusInternalServerError)
@@ -355,13 +365,17 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
-func saveSecret(dir string, data []byte) (string, error) {
+func saveSecret(dir string, data []byte, label string) (string, error) {
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		return "", err
 	}
 
-	name := time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(id) + ".enc"
+	name := time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(id)
+	if safe := sanitizeSecretLabel(label); safe != "" {
+		name += "-" + safe
+	}
+	name += ".enc"
 	path := filepath.Join(dir, name)
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
@@ -377,6 +391,34 @@ func saveSecret(dir string, data []byte) (string, error) {
 		return "", err
 	}
 	return name, nil
+}
+
+func sanitizeSecretLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	lastDash := false
+	for _, r := range label {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(unicode.ToLower(r))
+			lastDash = false
+		case r == '-' || r == '_' || unicode.IsSpace(r):
+			if b.Len() == 0 || lastDash {
+				continue
+			}
+			b.WriteByte('-')
+			lastDash = true
+		}
+		if b.Len() >= 40 {
+			break
+		}
+	}
+
+	return strings.Trim(b.String(), "-_")
 }
 
 func readSecret(dir, name string) ([]byte, error) {
