@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -59,7 +60,7 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
     <textarea id="view-plain" class="hidden" readonly></textarea>
   </div>
   <p><a href="/">Back</a></p>
-  <script type="application/json" id="enc-payload">{{.Ciphertext}}</script>
+  <textarea id="enc-payload" class="hidden" readonly>{{.Ciphertext}}</textarea>
   <script>
   (function () {
     const enc = new TextEncoder();
@@ -92,13 +93,12 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
       const salt = b64ToBytes(payload.salt);
       const nonce = b64ToBytes(payload.nonce);
       const ct = b64ToBytes(payload.ct);
-      const key = await deriveKey(password, salt, payload.iter);
+      const key = await deriveKey(password, salt, Number(payload.iter));
       const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, key, ct);
       return dec.decode(plainBuf);
     }
 
-    const payloadEl = document.getElementById("enc-payload");
-    const payload = JSON.parse(payloadEl.textContent);
+    const payload = JSON.parse(document.getElementById("enc-payload").value);
     const btn = document.getElementById("decrypt-btn");
     const passEl = document.getElementById("view-password");
     const errEl = document.getElementById("view-error");
@@ -210,12 +210,10 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
       saveBtn.disabled = true;
       try {
         const payload = await encryptSecret(secret, password);
-        const body = new URLSearchParams();
-        body.set("payload", JSON.stringify(payload));
         const resp = await fetch("/", {
           method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: body.toString(),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
           credentials: "same-origin"
         });
         if (!resp.ok) {
@@ -271,18 +269,18 @@ func main() {
 			}
 		case http.MethodPost:
 			r.Body = http.MaxBytesReader(w, r.Body, maxSecretSize)
-			if err := r.ParseForm(); err != nil {
+			payload, err := io.ReadAll(r.Body)
+			if err != nil {
 				http.Error(w, "invalid request", http.StatusBadRequest)
 				return
 			}
-
-			payload := strings.TrimSpace(r.FormValue("payload"))
-			if payload == "" || !secretcrypto.IsPayload([]byte(payload)) {
+			payload = []byte(strings.TrimSpace(string(payload)))
+			if len(payload) == 0 || !secretcrypto.IsPayload(payload) {
 				http.Error(w, "invalid encrypted payload", http.StatusBadRequest)
 				return
 			}
 
-			filename, err := saveSecret(dataDir, []byte(payload))
+			filename, err := saveSecret(dataDir, payload)
 			if err != nil {
 				log.Printf("save error: %v", err)
 				http.Error(w, "save failed", http.StatusInternalServerError)
