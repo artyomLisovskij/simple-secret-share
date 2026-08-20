@@ -13,6 +13,7 @@ An authenticated user pastes text into a form, encrypts it in the browser with a
 - Frontend encryption with the Web Crypto API and no third-party JavaScript libraries
 - Push and pull of encrypted secrets over shareable links
 - Optional secret name, reflected in the filename and in the share URL
+- Optional one-time links and TTL, with reusable/never-expire modes available
 - Decryption only in the browser or via the CLI; the encryption password is not sent to the server
 - On-disk storage of ciphertext only (`./secrets/*.enc`)
 
@@ -44,11 +45,12 @@ Edit `.env` and set a strong `BASIC_PASS` before use.
 
 ## How sharing works
 
-- `push`: open `/`, authenticate with Basic Auth, optionally set a name, enter a secret and an encryption password
-- the browser encrypts the secret before upload; the server stores only ciphertext
+- `push`: open `/`, authenticate with Basic Auth, optionally set a name/TTL/one-time mode, enter a secret and an encryption password
+- the browser encrypts the secret before upload; the server stores only ciphertext plus link metadata
 - if a name is provided, it is appended to the filename (`...-<name>.enc`)
 - `pull`: open `/s/<filename>.enc` with Basic Auth, then enter the encryption password in the page
 - decryption happens in the browser; the encryption password is not sent to the server
+- one-time secrets are deleted after the first successful decrypt; expired secrets are removed automatically
 
 Encrypted JSON is also available at `/s/<filename>.enc/raw` (still behind Basic Auth).
 

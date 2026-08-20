@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	"secret-drop/internal/secretcrypto"
+	"secret-drop/internal/secretfile"
 )
 
 const maxSecretSize = 1024 * 1024 // 1 MB
@@ -28,10 +29,12 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
   <title>Secret Drop</title>
   <style>
     body { font-family: sans-serif; max-width: 700px; margin: 60px auto; padding: 0 20px; }
-    textarea, input[type=password], input[type=text] { width: 100%; box-sizing: border-box; font-size: 16px; margin-top: 8px; }
+    textarea, input[type=password], input[type=text], select { width: 100%; box-sizing: border-box; font-size: 16px; margin-top: 8px; }
     textarea { height: 250px; font-family: monospace; }
     button { margin-top: 12px; padding: 10px 20px; font-size: 16px; }
     label { display: block; margin-top: 12px; }
+    .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+    .check input { width: auto; margin: 0; }
     .ok { padding: 12px; background: #eee; margin-bottom: 16px; }
     .err { padding: 12px; background: #fdecea; color: #611a15; margin-bottom: 16px; }
     .box { padding: 12px; background: #f6f6f6; margin-bottom: 16px; word-break: break-all; }
@@ -47,6 +50,7 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
     <div><strong>Share link:</strong></div>
     <div><a href="{{.SecretURL}}">{{.SecretURL}}</a></div>
     <div class="muted">Basic Auth is required. Recipients also need the encryption password.</div>
+    {{if .MetaLine}}<div class="muted">{{.MetaLine}}</div>{{end}}
   </div>
   {{end}}
 
@@ -54,11 +58,13 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
   <div class="box">
     <div><strong>Encrypted secret</strong></div>
     <div class="muted">Enter the encryption password to decrypt in the browser. The password is not sent to the server.</div>
+    {{if .MetaLine}}<div class="muted">{{.MetaLine}}</div>{{end}}
     <label>Password
       <input id="view-password" type="password" autocomplete="off" required>
     </label>
     <button type="button" id="decrypt-btn">Decrypt</button>
     <div id="view-error" class="err hidden"></div>
+    <div id="view-info" class="ok hidden"></div>
     <textarea id="view-plain" class="hidden" readonly></textarea>
   </div>
   <p><a href="/">Back</a></p>
@@ -67,6 +73,8 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
   (function () {
     const enc = new TextEncoder();
     const dec = new TextDecoder();
+    const filename = {{printf "%q" .Filename}};
+    const once = {{.Once}};
 
     function b64ToBytes(b64) {
       const bin = atob(b64);
@@ -104,16 +112,31 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
     const btn = document.getElementById("decrypt-btn");
     const passEl = document.getElementById("view-password");
     const errEl = document.getElementById("view-error");
+    const infoEl = document.getElementById("view-info");
     const outEl = document.getElementById("view-plain");
+
+    async function markConsumed() {
+      if (!once) return;
+      const resp = await fetch("/s/" + encodeURIComponent(filename) + "/consumed", {
+        method: "POST",
+        credentials: "same-origin"
+      });
+      if (resp.ok) {
+        infoEl.textContent = "One-time secret deleted from the server.";
+        infoEl.classList.remove("hidden");
+      }
+    }
 
     async function runDecrypt() {
       errEl.classList.add("hidden");
+      infoEl.classList.add("hidden");
       outEl.classList.add("hidden");
       outEl.value = "";
       try {
         const plain = await decryptPayload(payload, passEl.value);
         outEl.value = plain;
         outEl.classList.remove("hidden");
+        await markConsumed();
       } catch (e) {
         errEl.textContent = "Wrong password or corrupted payload.";
         errEl.classList.remove("hidden");
@@ -139,6 +162,19 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
     </label>
     <label>Confirm password
       <input id="password2" type="password" autocomplete="new-password" required>
+    </label>
+    <label>Expires
+      <select id="ttl">
+        <option value="0">Never</option>
+        <option value="3600">1 hour</option>
+        <option value="21600">6 hours</option>
+        <option value="86400" selected>24 hours</option>
+        <option value="604800">7 days</option>
+      </select>
+    </label>
+    <label class="check">
+      <input id="once" type="checkbox" checked>
+      <span>Delete after first successful decrypt (one-time link)</span>
     </label>
     <div id="create-error" class="err hidden"></div>
     <button type="submit" id="save-btn">Save</button>
@@ -216,10 +252,17 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
       try {
         const payload = await encryptSecret(secret, password);
         const name = document.getElementById("secret-name").value.trim();
+        const once = document.getElementById("once").checked;
+        const ttlSeconds = Number(document.getElementById("ttl").value);
         const resp = await fetch("/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name, payload: payload }),
+          body: JSON.stringify({
+            name: name,
+            once: once,
+            ttl_seconds: ttlSeconds,
+            payload: payload
+          }),
           credentials: "same-origin"
         });
         if (!resp.ok) {
@@ -245,6 +288,9 @@ type pageData struct {
 	Message    string
 	SecretURL  string
 	Ciphertext string
+	Filename   string
+	Once       bool
+	MetaLine   string
 }
 
 func main() {
@@ -260,6 +306,8 @@ func main() {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		log.Fatal(err)
 	}
+
+	go expireLoop(dataDir)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -282,15 +330,33 @@ func main() {
 			}
 
 			var req struct {
-				Name    string          `json:"name"`
-				Payload json.RawMessage `json:"payload"`
+				Name       string          `json:"name"`
+				Once       bool            `json:"once"`
+				TTLSeconds int64           `json:"ttl_seconds"`
+				Payload    json.RawMessage `json:"payload"`
 			}
-			if err := json.Unmarshal(body, &req); err != nil || len(req.Payload) == 0 || !secretcrypto.IsPayload(req.Payload) {
+			if err := json.Unmarshal(body, &req); err != nil || !secretcrypto.IsPayload(req.Payload) {
+				http.Error(w, "invalid encrypted payload", http.StatusBadRequest)
+				return
+			}
+			if req.TTLSeconds < 0 {
+				http.Error(w, "invalid ttl", http.StatusBadRequest)
+				return
+			}
+
+			var expiresAt *time.Time
+			if req.TTLSeconds > 0 {
+				t := time.Now().UTC().Add(time.Duration(req.TTLSeconds) * time.Second)
+				expiresAt = &t
+			}
+
+			wrapped, err := secretfile.Wrap(req.Payload, req.Once, expiresAt)
+			if err != nil {
 				http.Error(w, "invalid encrypted payload", http.StatusBadRequest)
 				return
 			}
 
-			filename, err := saveSecret(dataDir, req.Payload, req.Name)
+			filename, err := saveSecret(dataDir, wrapped, req.Name)
 			if err != nil {
 				log.Printf("save error: %v", err)
 				http.Error(w, "save failed", http.StatusInternalServerError)
@@ -302,6 +368,7 @@ func main() {
 			if err := page.Execute(w, pageData{
 				Message:   "Saved.",
 				SecretURL: secretURL,
+				MetaLine:  formatMeta(req.Once, expiresAt),
 			}); err != nil {
 				log.Printf("template error: %v", err)
 			}
@@ -311,18 +378,55 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/s/", func(w http.ResponseWriter, r *http.Request) {
-		name, raw, ok := parseSecretPath(r.URL.Path)
+		name, action, ok := parseSecretPath(r.URL.Path)
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
+
+		path := filepath.Join(dataDir, name)
+
+		switch action {
+		case "consumed":
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", "POST")
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			blob, err := os.ReadFile(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					http.NotFound(w, r)
+					return
+				}
+				http.Error(w, "read failed", http.StatusInternalServerError)
+				return
+			}
+			env, err := secretfile.Open(blob)
+			if err != nil {
+				http.Error(w, "invalid secret", http.StatusInternalServerError)
+				return
+			}
+			if !env.Once {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			if err := secretfile.DeleteIfExists(path); err != nil {
+				http.Error(w, "delete failed", http.StatusInternalServerError)
+				return
+			}
+			log.Printf("consumed one-time secret: %s", name)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		blob, err := readSecret(dataDir, name)
+		blob, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				http.NotFound(w, r)
@@ -332,19 +436,29 @@ func main() {
 			http.Error(w, "read failed", http.StatusInternalServerError)
 			return
 		}
-		if !secretcrypto.IsPayload(blob) {
+
+		env, err := secretfile.Open(blob)
+		if err != nil {
 			http.Error(w, "invalid encrypted payload", http.StatusInternalServerError)
 			return
 		}
+		if env.Expired(time.Now().UTC()) {
+			_ = secretfile.DeleteIfExists(path)
+			http.NotFound(w, r)
+			return
+		}
 
-		if raw {
+		if action == "raw" {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			_, _ = w.Write(blob)
+			_, _ = w.Write(env.Payload)
 			return
 		}
 
 		if err := page.Execute(w, pageData{
-			Ciphertext: string(blob),
+			Ciphertext: string(env.Payload),
+			Filename:   name,
+			Once:       env.Once,
+			MetaLine:   formatMeta(env.Once, env.ExpiresAt),
 		}); err != nil {
 			log.Printf("template error: %v", err)
 		}
@@ -363,6 +477,57 @@ func main() {
 
 	log.Printf("listening on %s", addr)
 	log.Fatal(server.ListenAndServe())
+}
+
+func expireLoop(dir string) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		purgeExpired(dir)
+		<-ticker.C
+	}
+}
+
+func purgeExpired(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	now := time.Now().UTC()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".enc") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		blob, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		env, err := secretfile.Open(blob)
+		if err != nil {
+			continue
+		}
+		if env.Expired(now) {
+			if err := secretfile.DeleteIfExists(path); err == nil {
+				log.Printf("expired secret deleted: %s", entry.Name())
+			}
+		}
+	}
+}
+
+func formatMeta(once bool, expiresAt *time.Time) string {
+	parts := make([]string, 0, 2)
+	if once {
+		parts = append(parts, "One-time link (deleted after first successful decrypt).")
+	} else {
+		parts = append(parts, "Reusable link.")
+	}
+	if expiresAt == nil {
+		parts = append(parts, "No expiry.")
+	} else {
+		parts = append(parts, "Expires at "+expiresAt.UTC().Format(time.RFC3339)+".")
+	}
+	return strings.Join(parts, " ")
 }
 
 func saveSecret(dir string, data []byte, label string) (string, error) {
@@ -421,28 +586,27 @@ func sanitizeSecretLabel(label string) string {
 	return strings.Trim(b.String(), "-_")
 }
 
-func readSecret(dir, name string) ([]byte, error) {
-	if !isValidSecretName(name) {
-		return nil, os.ErrNotExist
-	}
-	return os.ReadFile(filepath.Join(dir, name))
-}
-
-func parseSecretPath(path string) (name string, raw bool, ok bool) {
+func parseSecretPath(path string) (name string, action string, ok bool) {
 	if !strings.HasPrefix(path, "/s/") {
-		return "", false, false
+		return "", "", false
 	}
 
-	name = strings.TrimPrefix(path, "/s/")
-	if strings.HasSuffix(name, "/raw") {
-		raw = true
-		name = strings.TrimSuffix(name, "/raw")
+	rest := strings.TrimPrefix(path, "/s/")
+	switch {
+	case strings.HasSuffix(rest, "/raw"):
+		action = "raw"
+		name = strings.TrimSuffix(rest, "/raw")
+	case strings.HasSuffix(rest, "/consumed"):
+		action = "consumed"
+		name = strings.TrimSuffix(rest, "/consumed")
+	default:
+		name = rest
 	}
 
 	if !isValidSecretName(name) {
-		return "", false, false
+		return "", "", false
 	}
-	return name, raw, true
+	return name, action, true
 }
 
 func isValidSecretName(name string) bool {

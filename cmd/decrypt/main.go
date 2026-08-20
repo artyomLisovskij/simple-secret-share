@@ -8,10 +8,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 
 	"secret-drop/internal/secretcrypto"
+	"secret-drop/internal/secretfile"
 )
 
 func main() {
@@ -50,6 +52,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	env, err := secretfile.Open(blob)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open error: %v\n", err)
+		os.Exit(1)
+	}
+	if env.Expired(time.Now().UTC()) {
+		_ = secretfile.DeleteIfExists(path)
+		fmt.Fprintln(os.Stderr, "secret expired")
+		os.Exit(1)
+	}
+
 	fmt.Fprint(os.Stderr, "Password: ")
 	passBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Fprintln(os.Stderr)
@@ -58,10 +71,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	plain, err := secretcrypto.Decrypt(blob, string(passBytes))
+	plain, err := secretcrypto.Decrypt(env.Payload, string(passBytes))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "decrypt error: %v\n", err)
 		os.Exit(1)
+	}
+
+	if env.Once {
+		if err := secretfile.DeleteIfExists(path); err != nil {
+			fmt.Fprintf(os.Stderr, "delete error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, "One-time secret deleted from disk.")
 	}
 
 	_, _ = os.Stdout.Write(plain)
