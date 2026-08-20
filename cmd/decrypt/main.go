@@ -71,7 +71,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	plain, err := secretcrypto.Decrypt(env.Payload, string(passBytes))
+	plain, err := secretcrypto.Decrypt(blob, string(passBytes))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "decrypt error: %v\n", err)
 		os.Exit(1)

@@ -77,6 +77,8 @@ func Decrypt(blob []byte, password string) ([]byte, error) {
 		return nil, errors.New("password is required")
 	}
 
+	blob = unwrapEnvelopePayload(blob)
+
 	var payload Payload
 	if err := json.Unmarshal(blob, &payload); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
@@ -113,6 +115,23 @@ func Decrypt(blob []byte, password string) ([]byte, error) {
 		return nil, ErrDecryptFailed
 	}
 	return plain, nil
+}
+
+// unwrapEnvelopePayload returns the inner crypto payload when blob is a storage envelope.
+func unwrapEnvelopePayload(blob []byte) []byte {
+	if IsPayload(blob) {
+		return blob
+	}
+	var env struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(blob, &env); err != nil || len(env.Payload) == 0 {
+		return blob
+	}
+	if IsPayload(env.Payload) {
+		return env.Payload
+	}
+	return blob
 }
 
 func IsPayload(blob []byte) bool {
