@@ -4,13 +4,17 @@ A minimal web service for sharing secrets over HTTPS via Cloudflare Tunnel.
 
 An authenticated user pastes text into a form, encrypts it in the browser with a password, and the service stores only the ciphertext. Share links require Basic Auth, and opening a secret also requires the encryption password (decrypted in the browser).
 
-## Features
+## Advantages
 
-- Basic Auth for create and read links
-- Browser-side encryption/decryption with Web Crypto (no npm)
-- Encrypted files on disk (`AES-256-GCM` + `PBKDF2-SHA256`)
-- Temporary public HTTPS URL through Cloudflare quick tunnel
-- Go CLI utility to decrypt stored files
+- No host port publish: the app stays on the Docker network; public access goes only through Cloudflare Tunnel
+- Account-less Cloudflare quick tunnel: no Cloudflare account required for a temporary public endpoint
+- Automated random `trycloudflare.com` hostname with HTTPS/TLS
+- Basic Auth for both creating and opening secrets
+- Frontend encryption with the Web Crypto API and no third-party JavaScript libraries
+- Push and pull of encrypted secrets over shareable links
+- Optional secret name, reflected in the filename and in the share URL
+- Decryption only in the browser or via the CLI; the encryption password is not sent to the server
+- On-disk storage of ciphertext only (`./secrets/*.enc`)
 
 ## Requirements
 
